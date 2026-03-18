@@ -353,6 +353,14 @@ int init_serial_with_file_descriptor(int file_descriptor) {
     return 0;
   }
 
+  // Initialize slip descriptor
+  static const slip_descriptor_s slip_descriptor = {
+      .buf = slip_buffer,
+      .buf_size = sizeof(slip_buffer),
+      .recv_message = send_message_to_queue,
+  };
+  slip_init(&slip, &slip_descriptor);
+
   int r;
   r = libusb_set_option(NULL, LIBUSB_OPTION_NO_DEVICE_DISCOVERY, NULL);
   if (r != LIBUSB_SUCCESS) {
