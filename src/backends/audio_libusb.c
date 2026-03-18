@@ -206,13 +206,35 @@ int audio_initialize(const char *output_device_name, unsigned int audio_buffer_s
   // Create larger ring buffer for stable audio - about 1.5 seconds at 44.1kHz stereo 16-bit
   audio_buffer = ring_buffer_create(256 * 1024);
 
-  if (SDL_strcasecmp(SDL_GetCurrentAudioDriver(), "openslES") == 0 || output_device_name == NULL) {
-    SDL_Log("Using default audio device");
-    sdl_audio_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &audio_spec, &audio_callback, &audio_buffer);
-  } else {
-    // TODO: Implement audio device selection
-    sdl_audio_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &audio_spec, &audio_callback, &audio_buffer);
+  SDL_AudioDeviceID target_device = SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
+  if (output_device_name != NULL) {
+    int count = 0;
+    SDL_AudioDeviceID *devices = SDL_GetAudioPlaybackDevices(&count);
+    if (devices) {
+      // Try exact match first
+      for (int i = 0; i < count; i++) {
+        const char *name = SDL_GetAudioDeviceName(devices[i]);
+        if (name && SDL_strcmp(name, output_device_name) == 0) {
+          target_device = devices[i];
+          SDL_Log("Found exact match audio device: %s (id=%u)", name, devices[i]);
+          break;
+        }
+      }
+      // If no exact match, pick any device not named "M8"
+      if (target_device == SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK) {
+        for (int i = 0; i < count; i++) {
+          const char *name = SDL_GetAudioDeviceName(devices[i]);
+          if (name && SDL_strstr(name, "M8") == NULL) {
+            target_device = devices[i];
+            SDL_Log("Using non-M8 audio device: %s (id=%u)", name, devices[i]);
+            break;
+          }
+        }
+      }
+      SDL_free(devices);
+    }
   }
+  sdl_audio_stream = SDL_OpenAudioDeviceStream(target_device, &audio_spec, &audio_callback, &audio_buffer);
 
   if (sdl_audio_stream == NULL) {
     SDL_LogError(SDL_LOG_CATEGORY_SYSTEM, "Failed to open audio stream: %s", SDL_GetError());
