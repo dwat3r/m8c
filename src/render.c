@@ -313,7 +313,7 @@ void draw_rectangle(struct draw_rectangle_command *command) {
 
 #ifdef __ANDROID__
     int bgcolor = (command->color.r << 16) | (command->color.g << 8) | command->color.b;
-    SDL_AndroidSendMessage(0x8001, bgcolor);
+    SDL_SendAndroidMessage(0x8001, bgcolor);
 #endif
   }
 
