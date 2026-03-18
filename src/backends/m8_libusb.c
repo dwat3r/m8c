@@ -393,6 +393,11 @@ int m8_initialize(int verbose, const char *preferred_device) {
     return 1;
   }
 
+#ifdef __ANDROID__
+  // On Android, device connection is handled by JNI via init_serial_with_file_descriptor()
+  return 0;
+#endif
+
   // Initialize slip descriptor
   static const slip_descriptor_s slip_descriptor = {
       .buf = slip_buffer,
