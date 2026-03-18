@@ -8,12 +8,13 @@
 #include <errno.h>
 #include <libusb.h>
 
-#define EP_ISO_IN 0x85
-#define IFACE_NUM 4
-
 #define NUM_TRANSFERS 64
-#define PACKET_SIZE 180
 #define NUM_PACKETS 2
+
+static int audio_iface_num = -1;
+static int audio_alt_setting = -1;
+static int audio_ep_address = -1;
+static int audio_packet_size = -1;
 
 extern libusb_device_handle *devh;
 
@@ -136,11 +137,11 @@ static int benchmark_in() {
       return -ENOMEM;
     }
 
-    Uint8 *buffer = SDL_malloc(PACKET_SIZE * NUM_PACKETS);
+    Uint8 *buffer = SDL_malloc(audio_packet_size * NUM_PACKETS);
 
-    libusb_fill_iso_transfer(xfr[i], devh, EP_ISO_IN, buffer, PACKET_SIZE * NUM_PACKETS,
+    libusb_fill_iso_transfer(xfr[i], devh, audio_ep_address, buffer, audio_packet_size * NUM_PACKETS,
                              NUM_PACKETS, cb_xfr, NULL, 0);
-    libusb_set_iso_packet_lengths(xfr[i], PACKET_SIZE);
+    libusb_set_iso_packet_lengths(xfr[i], audio_packet_size);
 
     libusb_submit_transfer(xfr[i]);
   }
@@ -158,29 +159,75 @@ int audio_initialize(const char *output_device_name, unsigned int audio_buffer_s
     return -1;
   }
 
+  // Discover audio streaming IN interface from USB descriptors
+  {
+    libusb_device *dev = libusb_get_device(devh);
+    struct libusb_config_descriptor *config = NULL;
+    int ret = libusb_get_active_config_descriptor(dev, &config);
+    if (ret < 0) {
+      SDL_LogError(SDL_LOG_CATEGORY_SYSTEM, "Failed to get config descriptor: %s", libusb_error_name(ret));
+      return ret;
+    }
+
+    audio_iface_num = -1;
+    for (int i = 0; i < config->bNumInterfaces; i++) {
+      const struct libusb_interface *iface = &config->interface[i];
+      for (int a = 0; a < iface->num_altsetting; a++) {
+        const struct libusb_interface_descriptor *alt = &iface->altsetting[a];
+        // USB Audio class=1, AudioStreaming subclass=2
+        if (alt->bInterfaceClass != 1 || alt->bInterfaceSubClass != 2)
+          continue;
+        for (int e = 0; e < alt->bNumEndpoints; e++) {
+          const struct libusb_endpoint_descriptor *ep = &alt->endpoint[e];
+          // Isochronous IN endpoint
+          if ((ep->bmAttributes & 0x03) == LIBUSB_TRANSFER_TYPE_ISOCHRONOUS &&
+              (ep->bEndpointAddress & LIBUSB_ENDPOINT_IN)) {
+            audio_iface_num = alt->bInterfaceNumber;
+            audio_alt_setting = alt->bAlternateSetting;
+            audio_ep_address = ep->bEndpointAddress;
+            audio_packet_size = ep->wMaxPacketSize;
+            break;
+          }
+        }
+        if (audio_iface_num >= 0) break;
+      }
+      if (audio_iface_num >= 0) break;
+    }
+
+    libusb_free_config_descriptor(config);
+
+    if (audio_iface_num < 0) {
+      SDL_LogError(SDL_LOG_CATEGORY_SYSTEM, "No USB audio streaming IN interface found");
+      return -1;
+    }
+
+    SDL_Log("Found audio: iface=%d alt=%d ep=0x%02x pktsize=%d",
+            audio_iface_num, audio_alt_setting, audio_ep_address, audio_packet_size);
+  }
+
   int rc;
 
-  rc = libusb_kernel_driver_active(devh, IFACE_NUM);
+  rc = libusb_kernel_driver_active(devh, audio_iface_num);
   if (rc < 0) {
     SDL_LogError(SDL_LOG_CATEGORY_SYSTEM, "Error checking kernel driver status: %s", libusb_error_name(rc));
     return rc;
   }
   if (rc == 1) {
     SDL_Log("Detaching kernel driver");
-    rc = libusb_detach_kernel_driver(devh, IFACE_NUM);
+    rc = libusb_detach_kernel_driver(devh, audio_iface_num);
     if (rc < 0) {
       SDL_LogError(SDL_LOG_CATEGORY_SYSTEM, "Could not detach kernel driver: %s", libusb_error_name(rc));
       return rc;
     }
   }
 
-  rc = libusb_claim_interface(devh, IFACE_NUM);
+  rc = libusb_claim_interface(devh, audio_iface_num);
   if (rc < 0) {
     SDL_LogError(SDL_LOG_CATEGORY_SYSTEM, "Error claiming interface: %s\n", libusb_error_name(rc));
     return rc;
   }
 
-  rc = libusb_set_interface_alt_setting(devh, IFACE_NUM, 1);
+  rc = libusb_set_interface_alt_setting(devh, audio_iface_num, audio_alt_setting);
   if (rc < 0) {
     SDL_LogError(SDL_LOG_CATEGORY_SYSTEM, "Error setting alt setting: %s\n", libusb_error_name(rc));
     return rc;
@@ -258,9 +305,9 @@ void audio_close() {
     }
   }
 
-  SDL_Log("Freeing interface %d", IFACE_NUM);
+  SDL_Log("Freeing interface %d", audio_iface_num);
 
-  rc = libusb_release_interface(devh, IFACE_NUM);
+  rc = libusb_release_interface(devh, audio_iface_num);
   if (rc < 0) {
     SDL_LogError(SDL_LOG_CATEGORY_SYSTEM, "Error releasing interface: %s\n", libusb_error_name(rc));
     return;
