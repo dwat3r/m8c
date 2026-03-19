@@ -16,6 +16,7 @@
 
 static int ep_out_addr = 0x03;
 static int ep_in_addr = 0x83;
+static int midi_ep_out_addr = 0;
 
 #define ACM_CTRL_DTR 0x01
 #define ACM_CTRL_RTS 0x02
@@ -289,6 +290,49 @@ int check_serial_port() {
   return 1;
 }
 
+static void find_and_claim_midi_interface() {
+  struct libusb_config_descriptor *cfg = NULL;
+  int rc = libusb_get_active_config_descriptor(libusb_get_device(devh), &cfg);
+  if (rc < 0) {
+    SDL_LogWarn(SDL_LOG_CATEGORY_SYSTEM, "MIDI: could not get config descriptor: %s",
+                libusb_error_name(rc));
+    return;
+  }
+
+  for (int i = 0; i < cfg->bNumInterfaces; i++) {
+    const struct libusb_interface *iface = &cfg->interface[i];
+    for (int a = 0; a < iface->num_altsetting; a++) {
+      const struct libusb_interface_descriptor *desc = &iface->altsetting[a];
+      if (desc->bInterfaceClass != 0x01 || desc->bInterfaceSubClass != 0x03)
+        continue;
+      for (int e = 0; e < desc->bNumEndpoints; e++) {
+        const struct libusb_endpoint_descriptor *ep = &desc->endpoint[e];
+        if ((ep->bmAttributes & 0x03) == LIBUSB_TRANSFER_TYPE_BULK &&
+            !(ep->bEndpointAddress & LIBUSB_ENDPOINT_IN)) {
+          int if_num = desc->bInterfaceNumber;
+          if (libusb_kernel_driver_active(devh, if_num) == 1)
+            libusb_detach_kernel_driver(devh, if_num);
+          rc = libusb_claim_interface(devh, if_num);
+          if (rc < 0) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_SYSTEM,
+                        "MIDI: could not claim interface %d: %s", if_num,
+                        libusb_error_name(rc));
+          } else {
+            midi_ep_out_addr = ep->bEndpointAddress;
+            SDL_Log("MIDI interface %d claimed, OUT ep 0x%02x", if_num,
+                    midi_ep_out_addr);
+          }
+          libusb_free_config_descriptor(cfg);
+          return;
+        }
+      }
+    }
+  }
+
+  SDL_LogWarn(SDL_LOG_CATEGORY_SYSTEM, "MIDI: no bulk-OUT MIDI interface found");
+  libusb_free_config_descriptor(cfg);
+}
+
 int init_interface() {
 
   if (devh == NULL) {
@@ -332,6 +376,8 @@ int init_interface() {
     SDL_Log("Error during control transfer: %s", libusb_error_name(rc));
     return 0;
   }
+
+  find_and_claim_midi_interface();
 
   init_queue(&queue);
 
@@ -592,5 +638,16 @@ int m8_send_msg_keyjazz(uint8_t note, uint8_t velocity) {
 // These shouldn't be needed with serial
 int m8_pause_processing(void) { return 1; }
 int m8_resume_processing(void) { return 1; }
+
+int m8_send_midi_cc(uint8_t channel, uint8_t cc_num, uint8_t value) {
+  if (midi_ep_out_addr == 0 || devh == NULL) return 0;
+  uint8_t pkt[4] = {0x0B, (uint8_t)(0xB0 | (channel & 0x0F)), cc_num & 0x7F, value & 0x7F};
+  int sent = bulk_transfer(midi_ep_out_addr, pkt, 4, 10);
+  if (sent != 4) {
+    SDL_LogWarn(SDL_LOG_CATEGORY_SYSTEM, "MIDI CC send error: sent %d/4", sent);
+    return 0;
+  }
+  return 1;
+}
 
 #endif

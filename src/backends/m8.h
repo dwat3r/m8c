@@ -3,6 +3,7 @@
 #ifndef M8_H_
 #define M8_H_
 
+#include <stdint.h>
 #include "../config.h"
 
 enum return_codes {
@@ -21,5 +22,6 @@ int m8_process_data(const config_params_s *conf);
 int m8_pause_processing(void);
 int m8_resume_processing(void);
 int m8_close(void);
+int m8_send_midi_cc(uint8_t channel, uint8_t cc_num, uint8_t value);
 
 #endif
