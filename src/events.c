@@ -47,6 +47,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     if (ctx->device_connected) {
       renderer_clear_screen();
       m8_resume_processing();
+      m8_reset_display();
     }
     break;
 
