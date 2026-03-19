@@ -9,18 +9,28 @@
 #include <libusb.h>
 
 #define NUM_TRANSFERS 64
+#define NUM_OUT_TRANSFERS 8
 #define NUM_PACKETS 2
 
+// IN path (M8 → phone)
 static int audio_iface_num = -1;
 static int audio_alt_setting = -1;
 static int audio_ep_address = -1;
 static int audio_packet_size = -1;
 
+// OUT path (phone mic → M8)
+static int audio_out_iface_num = -1;
+static int audio_out_alt_setting = -1;
+static int audio_out_ep_address = -1;
+static int audio_out_packet_size = -1;
+
 extern libusb_device_handle *devh;
 
 SDL_AudioStream *sdl_audio_stream = NULL;
+static SDL_AudioStream *sdl_capture_stream = NULL;
 int audio_initialized = 0;
 RingBuffer *audio_buffer = NULL;
+static RingBuffer *mic_buffer = NULL;
 static uint8_t *audio_callback_buffer = NULL;
 static size_t audio_callback_buffer_size = 0;
 static int audio_prebuffer_filled = 0;
@@ -126,6 +136,40 @@ static void cb_xfr(struct libusb_transfer *xfr) {
 }
 
 static struct libusb_transfer *xfr[NUM_TRANSFERS];
+static struct libusb_transfer *xfr_out[NUM_OUT_TRANSFERS];
+
+static void cb_xfr_out(struct libusb_transfer *xfr) {
+  if (xfr->status != LIBUSB_TRANSFER_COMPLETED &&
+      xfr->status != LIBUSB_TRANSFER_TIMED_OUT) {
+    SDL_LogError(SDL_LOG_CATEGORY_SYSTEM, "OUT XFR error: %s",
+                 libusb_error_name(xfr->status));
+  }
+
+  int len = audio_out_packet_size * NUM_PACKETS;
+  uint32_t available = mic_buffer ? mic_buffer->size : 0;
+  if (available >= (uint32_t)len) {
+    ring_buffer_pop(mic_buffer, xfr->buffer, len);
+  } else {
+    SDL_memset(xfr->buffer, 0, len);
+    if (available > 0)
+      ring_buffer_pop(mic_buffer, xfr->buffer, available);
+  }
+
+  libusb_set_iso_packet_lengths(xfr, audio_out_packet_size);
+  libusb_submit_transfer(xfr);
+}
+
+static void capture_callback(void *userdata, SDL_AudioStream *stream,
+                              int additional_amount, int total_amount) {
+  (void)userdata;
+  (void)additional_amount;
+  uint8_t *buf = SDL_malloc(total_amount);
+  if (!buf) return;
+  int got = SDL_GetAudioStreamData(stream, buf, total_amount);
+  if (got > 0 && mic_buffer)
+    ring_buffer_push(mic_buffer, buf, got);
+  SDL_free(buf);
+}
 
 static int benchmark_in() {
   int i;
@@ -146,6 +190,23 @@ static int benchmark_in() {
     libusb_submit_transfer(xfr[i]);
   }
 
+  return 1;
+}
+
+static int start_audio_out() {
+  for (int i = 0; i < NUM_OUT_TRANSFERS; i++) {
+    xfr_out[i] = libusb_alloc_transfer(NUM_PACKETS);
+    if (!xfr_out[i]) {
+      SDL_LogError(SDL_LOG_CATEGORY_SYSTEM, "Could not allocate OUT transfer");
+      return -ENOMEM;
+    }
+    int len = audio_out_packet_size * NUM_PACKETS;
+    uint8_t *buffer = SDL_calloc(1, len);
+    libusb_fill_iso_transfer(xfr_out[i], devh, audio_out_ep_address,
+                             buffer, len, NUM_PACKETS, cb_xfr_out, NULL, 0);
+    libusb_set_iso_packet_lengths(xfr_out[i], audio_out_packet_size);
+    libusb_submit_transfer(xfr_out[i]);
+  }
   return 1;
 }
 
@@ -170,6 +231,7 @@ int audio_initialize(const char *output_device_name, unsigned int audio_buffer_s
     }
 
     audio_iface_num = -1;
+    audio_out_iface_num = -1;
     for (int i = 0; i < config->bNumInterfaces; i++) {
       const struct libusb_interface *iface = &config->interface[i];
       for (int a = 0; a < iface->num_altsetting; a++) {
@@ -179,19 +241,21 @@ int audio_initialize(const char *output_device_name, unsigned int audio_buffer_s
           continue;
         for (int e = 0; e < alt->bNumEndpoints; e++) {
           const struct libusb_endpoint_descriptor *ep = &alt->endpoint[e];
-          // Isochronous IN endpoint
-          if ((ep->bmAttributes & 0x03) == LIBUSB_TRANSFER_TYPE_ISOCHRONOUS &&
-              (ep->bEndpointAddress & LIBUSB_ENDPOINT_IN)) {
+          if ((ep->bmAttributes & 0x03) != LIBUSB_TRANSFER_TYPE_ISOCHRONOUS)
+            continue;
+          if ((ep->bEndpointAddress & LIBUSB_ENDPOINT_IN) && audio_iface_num < 0) {
             audio_iface_num = alt->bInterfaceNumber;
             audio_alt_setting = alt->bAlternateSetting;
             audio_ep_address = ep->bEndpointAddress;
             audio_packet_size = ep->wMaxPacketSize;
-            break;
+          } else if (!(ep->bEndpointAddress & LIBUSB_ENDPOINT_IN) && audio_out_iface_num < 0) {
+            audio_out_iface_num = alt->bInterfaceNumber;
+            audio_out_alt_setting = alt->bAlternateSetting;
+            audio_out_ep_address = ep->bEndpointAddress;
+            audio_out_packet_size = ep->wMaxPacketSize;
           }
         }
-        if (audio_iface_num >= 0) break;
       }
-      if (audio_iface_num >= 0) break;
     }
 
     libusb_free_config_descriptor(config);
@@ -201,8 +265,13 @@ int audio_initialize(const char *output_device_name, unsigned int audio_buffer_s
       return -1;
     }
 
-    SDL_Log("Found audio: iface=%d alt=%d ep=0x%02x pktsize=%d",
+    SDL_Log("Found audio IN: iface=%d alt=%d ep=0x%02x pktsize=%d",
             audio_iface_num, audio_alt_setting, audio_ep_address, audio_packet_size);
+    if (audio_out_iface_num >= 0)
+      SDL_Log("Found audio OUT: iface=%d alt=%d ep=0x%02x pktsize=%d",
+              audio_out_iface_num, audio_out_alt_setting, audio_out_ep_address, audio_out_packet_size);
+    else
+      SDL_Log("No USB audio OUT interface found, mic input disabled");
   }
 
   int rc;
@@ -231,6 +300,25 @@ int audio_initialize(const char *output_device_name, unsigned int audio_buffer_s
   if (rc < 0) {
     SDL_LogError(SDL_LOG_CATEGORY_SYSTEM, "Error setting alt setting: %s\n", libusb_error_name(rc));
     return rc;
+  }
+
+  // Claim OUT interface if available (and distinct from IN interface)
+  if (audio_out_iface_num >= 0 && audio_out_iface_num != audio_iface_num) {
+    rc = libusb_kernel_driver_active(devh, audio_out_iface_num);
+    if (rc == 1)
+      libusb_detach_kernel_driver(devh, audio_out_iface_num);
+    rc = libusb_claim_interface(devh, audio_out_iface_num);
+    if (rc < 0) {
+      SDL_LogError(SDL_LOG_CATEGORY_SYSTEM, "Error claiming OUT interface: %s", libusb_error_name(rc));
+      audio_out_iface_num = -1; // Disable OUT gracefully
+    } else {
+      rc = libusb_set_interface_alt_setting(devh, audio_out_iface_num, audio_out_alt_setting);
+      if (rc < 0) {
+        SDL_LogError(SDL_LOG_CATEGORY_SYSTEM, "Error setting OUT alt setting: %s", libusb_error_name(rc));
+        libusb_release_interface(devh, audio_out_iface_num);
+        audio_out_iface_num = -1;
+      }
+    }
   }
 
   if (!SDL_WasInit(SDL_INIT_AUDIO)) {
@@ -269,6 +357,38 @@ int audio_initialize(const char *output_device_name, unsigned int audio_buffer_s
 
   SDL_ResumeAudioStreamDevice(sdl_audio_stream);
 
+  // Start mic → M8 path if OUT interface was found
+  if (audio_out_iface_num >= 0) {
+    mic_buffer = ring_buffer_create(32 * 1024);
+    // Route to selected input device if specified
+    const char *capture_device_id = SDL_GetHint("SDL_ANDROID_AUDIO_CAPTURE_DEVICE_ID");
+    if (capture_device_id != NULL)
+      SDL_SetHint("SDL_ANDROID_AUDIO_DEVICE_ID", capture_device_id);
+    sdl_capture_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_RECORDING,
+                                                    &audio_spec, &capture_callback, NULL);
+    // Restore output device hint
+    if (output_device_name != NULL)
+      SDL_SetHint("SDL_ANDROID_AUDIO_DEVICE_ID", output_device_name);
+    else
+      SDL_SetHint("SDL_ANDROID_AUDIO_DEVICE_ID", "");
+    if (sdl_capture_stream == NULL) {
+      SDL_LogError(SDL_LOG_CATEGORY_SYSTEM, "Failed to open capture stream: %s", SDL_GetError());
+      ring_buffer_free(mic_buffer);
+      mic_buffer = NULL;
+    } else {
+      SDL_ResumeAudioStreamDevice(sdl_capture_stream);
+      if (start_audio_out() < 0) {
+        SDL_LogError(SDL_LOG_CATEGORY_SYSTEM, "Failed to start audio OUT transfers");
+        SDL_DestroyAudioStream(sdl_capture_stream);
+        sdl_capture_stream = NULL;
+        ring_buffer_free(mic_buffer);
+        mic_buffer = NULL;
+      } else {
+        SDL_Log("Mic → M8 audio input started");
+      }
+    }
+  }
+
   // Good to go
   SDL_LogDebug(SDL_LOG_CATEGORY_SYSTEM, "Starting capture");
   if ((rc = benchmark_in()) < 0) {
@@ -303,6 +423,26 @@ void audio_close() {
       SDL_LogError(SDL_LOG_CATEGORY_SYSTEM, "Error cancelling transfer: %s\n",
                    libusb_error_name(rc));
     }
+  }
+
+  if (sdl_capture_stream != NULL) {
+    SDL_DestroyAudioStream(sdl_capture_stream);
+    sdl_capture_stream = NULL;
+  }
+
+  for (int i = 0; i < NUM_OUT_TRANSFERS; i++) {
+    if (xfr_out[i]) {
+      libusb_cancel_transfer(xfr_out[i]);
+    }
+  }
+
+  if (audio_out_iface_num >= 0 && audio_out_iface_num != audio_iface_num) {
+    libusb_release_interface(devh, audio_out_iface_num);
+  }
+
+  if (mic_buffer) {
+    ring_buffer_free(mic_buffer);
+    mic_buffer = NULL;
   }
 
   SDL_Log("Freeing interface %d", audio_iface_num);
