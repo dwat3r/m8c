@@ -113,26 +113,26 @@ int audio_initialize(const char *output_device_name, const unsigned int audio_bu
     return 0;
   }
 
-  SDL_LogDebug(SDL_LOG_CATEGORY_AUDIO, "Audio input devices:");
+  SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO, "output_device_name: %s", output_device_name ? output_device_name : "(null/default)");
+  SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO, "Audio input devices (%d):", num_devices_in);
   for (int i = 0; i < num_devices_in; i++) {
     const SDL_AudioDeviceID instance_id = devices_in[i];
     const char *device_name = SDL_GetAudioDeviceName(instance_id);
-    SDL_LogDebug(SDL_LOG_CATEGORY_AUDIO, "%s", device_name);
+    SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO, "  in[%d] id=%u name=%s", i, instance_id, device_name);
     if (SDL_strstr(device_name, "M8") != NULL) {
       SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO, "M8 Audio Input device found: %s", device_name);
       m8_device_id = instance_id;
     }
   }
 
-  if (output_device_name != NULL) {
-    for (int i = 0; i < num_devices_out; i++) {
-      const SDL_AudioDeviceID instance_id = devices_out[i];
-      const char *device_name = SDL_GetAudioDeviceName(instance_id);
-      SDL_LogDebug(SDL_LOG_CATEGORY_AUDIO, "%s", device_name);
-      if (SDL_strcasestr(device_name, output_device_name) != NULL) {
-        SDL_Log("Requested output device found: %s", device_name);
-        output_device_id = instance_id;
-      }
+  SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO, "Audio output devices (%d):", num_devices_out);
+  for (int i = 0; i < num_devices_out; i++) {
+    const SDL_AudioDeviceID instance_id = devices_out[i];
+    const char *device_name = SDL_GetAudioDeviceName(instance_id);
+    SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO, "  out[%d] id=%u name=%s", i, instance_id, device_name);
+    if (output_device_name != NULL && SDL_strcasestr(device_name, output_device_name) != NULL) {
+      SDL_Log("Requested output device found: %s", device_name);
+      output_device_id = instance_id;
     }
   }
 
@@ -140,34 +140,34 @@ int audio_initialize(const char *output_device_name, const unsigned int audio_bu
   SDL_free(devices_out);
 
   if (!output_device_id) {
+    SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO, "No specific output device selected, using SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK");
     output_device_id = SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
+  } else {
+    SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO, "Using output device id=%u", output_device_id);
   }
 
   if (!m8_device_id) {
-    // forget about it
     SDL_Log("Cannot find M8 audio input device");
     return 0;
   }
 
-  char audio_buffer_size_str[256];
-  SDL_snprintf(audio_buffer_size_str, sizeof(audio_buffer_size_str), "%d", audio_buffer_size);
   if (audio_buffer_size > 0) {
+    char audio_buffer_size_str[32];
+    SDL_snprintf(audio_buffer_size_str, sizeof(audio_buffer_size_str), "%d", audio_buffer_size);
     SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO, "Setting requested audio device sample frames to %d",
                 audio_buffer_size);
     SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, audio_buffer_size_str);
   }
 
   audio_stream_out = SDL_OpenAudioDeviceStream(output_device_id, NULL, audio_cb_out, NULL);
-
-  SDL_AudioSpec audio_spec_out;
-  int audio_out_buffer_size_real, audio_in_buffer_size_real = 0;
-
-  SDL_GetAudioDeviceFormat(output_device_id, &audio_spec_out, &audio_out_buffer_size_real);
-
   if (!audio_stream_out) {
     SDL_LogError(SDL_LOG_CATEGORY_AUDIO, "Error opening audio output device: %s", SDL_GetError());
     return 0;
   }
+
+  SDL_AudioSpec audio_spec_out;
+  int audio_out_buffer_size_real, audio_in_buffer_size_real = 0;
+  SDL_GetAudioDeviceFormat(output_device_id, &audio_spec_out, &audio_out_buffer_size_real);
   SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO,
               "Opening audio output: rate %dhz, buffer size: %d frames", audio_spec_out.freq,
               audio_out_buffer_size_real);
@@ -183,8 +183,6 @@ int audio_initialize(const char *output_device_name, const unsigned int audio_bu
   SDL_GetAudioDeviceFormat(m8_device_id, &audio_spec_in, &audio_in_buffer_size_real);
   SDL_LogDebug(SDL_LOG_CATEGORY_AUDIO, "Audiospec In: format %d, channels %d, rate %d, buffer size %d frames",
                audio_spec_in.format, audio_spec_in.channels, audio_spec_in.freq, audio_in_buffer_size_real);
-
-
 
   SDL_ResumeAudioStreamDevice(audio_stream_out);
   SDL_ResumeAudioStreamDevice(audio_stream_in);
