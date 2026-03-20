@@ -9,7 +9,6 @@
 #include <libusb.h>
 
 #define NUM_TRANSFERS 64
-#define NUM_OUT_TRANSFERS 8
 #define NUM_PACKETS 2
 
 // IN path (M8 → phone)
@@ -18,19 +17,26 @@ static int audio_alt_setting = -1;
 static int audio_ep_address = -1;
 static int audio_packet_size = -1;
 
+#ifdef __ANDROID__
+#define NUM_OUT_TRANSFERS 8
 // OUT path (phone mic → M8)
 static int audio_out_iface_num = -1;
 static int audio_out_alt_setting = -1;
 static int audio_out_ep_address = -1;
 static int audio_out_packet_size = -1;
+#endif
 
 extern libusb_device_handle *devh;
 
 SDL_AudioStream *sdl_audio_stream = NULL;
+#ifdef __ANDROID__
 static SDL_AudioStream *sdl_capture_stream = NULL;
+#endif
 int audio_initialized = 0;
 RingBuffer *audio_buffer = NULL;
+#ifdef __ANDROID__
 static RingBuffer *mic_buffer = NULL;
+#endif
 static uint8_t *audio_callback_buffer = NULL;
 static size_t audio_callback_buffer_size = 0;
 static int audio_prebuffer_filled = 0;
@@ -136,6 +142,7 @@ static void cb_xfr(struct libusb_transfer *xfr) {
 }
 
 static struct libusb_transfer *xfr[NUM_TRANSFERS];
+#ifdef __ANDROID__
 static struct libusb_transfer *xfr_out[NUM_OUT_TRANSFERS];
 
 static void cb_xfr_out(struct libusb_transfer *xfr) {
@@ -170,6 +177,7 @@ static void capture_callback(void *userdata, SDL_AudioStream *stream,
     ring_buffer_push(mic_buffer, buf, got);
   SDL_free(buf);
 }
+#endif // __ANDROID__
 
 static int benchmark_in() {
   int i;
@@ -193,6 +201,7 @@ static int benchmark_in() {
   return 1;
 }
 
+#ifdef __ANDROID__
 static int start_audio_out() {
   for (int i = 0; i < NUM_OUT_TRANSFERS; i++) {
     xfr_out[i] = libusb_alloc_transfer(NUM_PACKETS);
@@ -209,6 +218,7 @@ static int start_audio_out() {
   }
   return 1;
 }
+#endif // __ANDROID__
 
 int audio_initialize(const char *output_device_name, unsigned int audio_buffer_size) {
   (void)audio_buffer_size;  // Suppress unused parameter warning
@@ -231,7 +241,9 @@ int audio_initialize(const char *output_device_name, unsigned int audio_buffer_s
     }
 
     audio_iface_num = -1;
+#ifdef __ANDROID__
     audio_out_iface_num = -1;
+#endif
     for (int i = 0; i < config->bNumInterfaces; i++) {
       const struct libusb_interface *iface = &config->interface[i];
       for (int a = 0; a < iface->num_altsetting; a++) {
@@ -248,11 +260,13 @@ int audio_initialize(const char *output_device_name, unsigned int audio_buffer_s
             audio_alt_setting = alt->bAlternateSetting;
             audio_ep_address = ep->bEndpointAddress;
             audio_packet_size = ep->wMaxPacketSize;
+#ifdef __ANDROID__
           } else if (!(ep->bEndpointAddress & LIBUSB_ENDPOINT_IN) && audio_out_iface_num < 0) {
             audio_out_iface_num = alt->bInterfaceNumber;
             audio_out_alt_setting = alt->bAlternateSetting;
             audio_out_ep_address = ep->bEndpointAddress;
             audio_out_packet_size = ep->wMaxPacketSize;
+#endif
           }
         }
       }
@@ -267,11 +281,13 @@ int audio_initialize(const char *output_device_name, unsigned int audio_buffer_s
 
     SDL_Log("Found audio IN: iface=%d alt=%d ep=0x%02x pktsize=%d",
             audio_iface_num, audio_alt_setting, audio_ep_address, audio_packet_size);
+#ifdef __ANDROID__
     if (audio_out_iface_num >= 0)
       SDL_Log("Found audio OUT: iface=%d alt=%d ep=0x%02x pktsize=%d",
               audio_out_iface_num, audio_out_alt_setting, audio_out_ep_address, audio_out_packet_size);
     else
       SDL_Log("No USB audio OUT interface found, mic input disabled");
+#endif
   }
 
   int rc;
@@ -302,6 +318,7 @@ int audio_initialize(const char *output_device_name, unsigned int audio_buffer_s
     return rc;
   }
 
+#ifdef __ANDROID__
   // Claim OUT interface if available (and distinct from IN interface)
   if (audio_out_iface_num >= 0 && audio_out_iface_num != audio_iface_num) {
     rc = libusb_kernel_driver_active(devh, audio_out_iface_num);
@@ -320,6 +337,7 @@ int audio_initialize(const char *output_device_name, unsigned int audio_buffer_s
       }
     }
   }
+#endif // __ANDROID__
 
   if (!SDL_WasInit(SDL_INIT_AUDIO)) {
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
@@ -357,6 +375,7 @@ int audio_initialize(const char *output_device_name, unsigned int audio_buffer_s
 
   SDL_ResumeAudioStreamDevice(sdl_audio_stream);
 
+#ifdef __ANDROID__
   // Start mic → M8 path if OUT interface was found
   if (audio_out_iface_num >= 0) {
     mic_buffer = ring_buffer_create(32 * 1024);
@@ -388,6 +407,7 @@ int audio_initialize(const char *output_device_name, unsigned int audio_buffer_s
       }
     }
   }
+#endif // __ANDROID__
 
   // Good to go
   SDL_LogDebug(SDL_LOG_CATEGORY_SYSTEM, "Starting capture");
@@ -425,6 +445,7 @@ void audio_close() {
     }
   }
 
+#ifdef __ANDROID__
   if (sdl_capture_stream != NULL) {
     SDL_DestroyAudioStream(sdl_capture_stream);
     sdl_capture_stream = NULL;
@@ -444,6 +465,7 @@ void audio_close() {
     ring_buffer_free(mic_buffer);
     mic_buffer = NULL;
   }
+#endif // __ANDROID__
 
   SDL_Log("Freeing interface %d", audio_iface_num);
 

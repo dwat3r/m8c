@@ -16,7 +16,9 @@
 
 static int ep_out_addr = 0x03;
 static int ep_in_addr = 0x83;
+#ifdef __ANDROID__
 static int midi_ep_out_addr = 0;
+#endif
 
 #define ACM_CTRL_DTR 0x01
 #define ACM_CTRL_RTS 0x02
@@ -290,6 +292,7 @@ int check_serial_port() {
   return 1;
 }
 
+#ifdef __ANDROID__
 static void find_and_claim_midi_interface() {
   struct libusb_config_descriptor *cfg = NULL;
   int rc = libusb_get_active_config_descriptor(libusb_get_device(devh), &cfg);
@@ -332,6 +335,7 @@ static void find_and_claim_midi_interface() {
   SDL_LogWarn(SDL_LOG_CATEGORY_SYSTEM, "MIDI: no bulk-OUT MIDI interface found");
   libusb_free_config_descriptor(cfg);
 }
+#endif // __ANDROID__
 
 int init_interface() {
 
@@ -377,7 +381,9 @@ int init_interface() {
     return 0;
   }
 
+#ifdef __ANDROID__
   find_and_claim_midi_interface();
+#endif
 
   init_queue(&queue);
 
@@ -639,6 +645,7 @@ int m8_send_msg_keyjazz(uint8_t note, uint8_t velocity) {
 int m8_pause_processing(void) { return 1; }
 int m8_resume_processing(void) { return 1; }
 
+#ifdef __ANDROID__
 int m8_send_midi_cc(uint8_t channel, uint8_t cc_num, uint8_t value) {
   if (midi_ep_out_addr == 0 || devh == NULL) return 0;
   uint8_t pkt[4] = {0x0B, (uint8_t)(0xB0 | (channel & 0x0F)), cc_num & 0x7F, value & 0x7F};
@@ -649,5 +656,11 @@ int m8_send_midi_cc(uint8_t channel, uint8_t cc_num, uint8_t value) {
   }
   return 1;
 }
+#else
+int m8_send_midi_cc(uint8_t channel, uint8_t cc_num, uint8_t value) {
+  (void)channel; (void)cc_num; (void)value;
+  return 0;
+}
+#endif
 
 #endif
