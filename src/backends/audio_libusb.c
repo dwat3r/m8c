@@ -33,6 +33,14 @@ SDL_AudioStream *sdl_audio_stream = NULL;
 static SDL_AudioStream *sdl_capture_stream = NULL;
 #endif
 int audio_initialized = 0;
+static float audio_gain = 1.0f;
+
+void audio_set_gain(float gain) {
+  audio_gain = gain;
+  if (sdl_audio_stream) {
+    SDL_SetAudioStreamGain(sdl_audio_stream, gain);
+  }
+}
 RingBuffer *audio_buffer = NULL;
 #ifdef __ANDROID__
 static RingBuffer *mic_buffer = NULL;
@@ -374,6 +382,10 @@ int audio_initialize(const char *output_device_name, unsigned int audio_buffer_s
   }
 
   SDL_ResumeAudioStreamDevice(sdl_audio_stream);
+
+  if (audio_gain != 1.0f) {
+    SDL_SetAudioStreamGain(sdl_audio_stream, audio_gain);
+  }
 
 #ifdef __ANDROID__
   // Start mic → M8 path if OUT interface was found

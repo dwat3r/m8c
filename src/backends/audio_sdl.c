@@ -9,6 +9,14 @@ SDL_AudioStream *audio_stream_in, *audio_stream_out;
 static unsigned int audio_paused = 0;
 static unsigned int audio_initialized = 0;
 static SDL_AudioSpec audio_spec_in = {SDL_AUDIO_S16LE, 2, 44100};
+static float audio_gain = 1.0f;
+
+void audio_set_gain(float gain) {
+  audio_gain = gain;
+  if (audio_stream_out) {
+    SDL_SetAudioStreamGain(audio_stream_out, gain);
+  }
+}
 
 static void SDLCALL audio_cb_out(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount) {
   // suppress compiler warnings
@@ -186,6 +194,10 @@ int audio_initialize(const char *output_device_name, const unsigned int audio_bu
 
   SDL_ResumeAudioStreamDevice(audio_stream_out);
   SDL_ResumeAudioStreamDevice(audio_stream_in);
+
+  if (audio_gain != 1.0f) {
+    SDL_SetAudioStreamGain(audio_stream_out, audio_gain);
+  }
 
   audio_paused = 0;
   audio_initialized = 1;

@@ -7,5 +7,6 @@ int audio_initialize(const char *output_device_name, unsigned int audio_buffer_s
 void audio_toggle(const char *output_device_name, unsigned int audio_buffer_size);
 void audio_process(void);
 void audio_close(void);
+void audio_set_gain(float gain);
 
 #endif
